@@ -1,0 +1,68 @@
+name: Build and Test (reusable)
+
+# workflow_call: this workflow has no triggers of its own (no push/pull_request).
+# It only runs when another workflow references it with `uses:`, passing inputs
+# the way you'd call a function. This is how you share pipeline logic across
+# multiple microservice repos/workflows without copy-pasting YAML.
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        description: 'JDK version to build with'
+        type: string
+        default: '17'
+      gradle-task:
+        description: 'Gradle task to run for the build step (tests always run separately)'
+        type: string
+        default: 'build'
+
+# A reusable workflow's own permissions are a ceiling the caller can only narrow,
+# never widen — declare here what this workflow itself needs.
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # inputs.* is how values passed by the caller (via `with:`) are read here.
+      - name: Set up JDK ${{ inputs.java-version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Cache Gradle dependencies and wrapper
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      # The build task itself is parameterized; callers can override it (e.g. "assemble")
+      # while still getting the same caching/test/artifact behavior for free.
+      - name: Build
+        run: ./gradlew ${{ inputs.gradle-task }} -x test
+
+      - name: Test
+        run: ./gradlew test
+
+      - name: Publish test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: |
+            build/reports/tests/test/
+            build/test-results/test/
+          retention-days: 14
