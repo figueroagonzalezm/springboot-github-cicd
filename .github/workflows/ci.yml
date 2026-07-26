@@ -101,13 +101,18 @@ jobs:
       # tag per image instead of several tags on the same digest. Fires unconditionally
       # (branch push or vX.Y.Z tag push alike), and is what deploy-to-eks's `outputs.image`
       # above references, so this is the one tag that must never be dropped or renamed.
+      #
+      # format=long is required, not the {{sha}} raw template variable: that handlebar
+      # always resolves to the short (7-char) SHA regardless of context, which silently
+      # produced a tag that didn't match ${{ github.sha }} in outputs.image below, and
+      # deploy-to-eks failed with ErrImagePull pulling a tag that was never pushed.
       - name: Extract image tag
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
           tags: |
-            type=raw,value={{sha}}
+            type=sha,format=long
 
       - name: Build and push image
         uses: docker/build-push-action@v6
