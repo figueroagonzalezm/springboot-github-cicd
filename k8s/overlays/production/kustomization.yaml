@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Matches the eks Terraform stack's application_namespace (default "app"),
+# which is also the only namespace the Fargate profile schedules pods into
+# and the only namespace the github-actions-deployer role may act in.
+namespace: app
+
+resources:
+  - ../../base
+
+# Placeholder registry/tag for local `kubectl apply -k` dry runs. The CD job
+# (deploy-to-eks in .github/workflows/ci.yml) rewrites this in place with
+# `kustomize edit set image` before applying, pointing at the image just
+# pushed to ECR for this commit.
+images:
+  - name: springboot-app
+    newName: PLACEHOLDER_REGISTRY/PLACEHOLDER_REPOSITORY
+    newTag: placeholder

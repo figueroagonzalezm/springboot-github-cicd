@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: springboot-app-config
+data:
+  # Consumed by the Dockerfile's ENTRYPOINT (`java $JAVA_OPTS -jar app.jar`).
+  # Explicit heap sizing here rather than relying on the JVM's container-aware
+  # default, since Fargate rounds requests/limits up to its nearest supported
+  # vCPU/memory combination.
+  JAVA_OPTS: "-Xmx256m"

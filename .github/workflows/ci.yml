@@ -37,6 +37,11 @@ jobs:
       contents: read
       id-token: write
 
+    # Consumed by deploy-to-eks below so it deploys the exact image this job
+    # just pushed, without re-deriving the tag format itself.
+    outputs:
+      image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
     # These repo/organization *variables* (Settings > Secrets and variables > Actions > Variables)
     # don't exist yet — they get created in Day 4 alongside the Terraform-provisioned ECR repo
     # and OIDC IAM role. Until then this job will fail at the "Configure AWS credentials" step,
@@ -94,7 +99,9 @@ jobs:
 
       # Derives tags from context instead of hand-rolled bash: always a commit-sha tag,
       # `latest` only on the default branch, and a semver tag when the run was triggered
-      # by a `vX.Y.Z` tag push.
+      # by a `vX.Y.Z` tag push. The full-sha tag (no prefix, unabbreviated) exists
+      # specifically so deploy-to-eks's `outputs.image` above can reference an exact,
+      # unambiguous tag without re-deriving docker/metadata-action's own short-sha format.
       - name: Extract image tags
         id: meta
         uses: docker/metadata-action@v5
@@ -102,6 +109,7 @@ jobs:
           images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
           tags: |
             type=sha,prefix=sha-,format=short
+            type=raw,value={{sha}}
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
 
@@ -116,3 +124,65 @@ jobs:
           # actions/cache above but for Buildx's own layer cache instead of ~/.gradle.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy-to-eks:
+    name: Deploy to EKS
+    needs: build-and-push-image
+    # Only deploy from main, and only on an actual push (not workflow_dispatch reruns of
+    # older commits, and never from a tag push — releases are tagged separately from the
+    # deploy trail). build-and-push-image already excludes pull_request.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    # Must match the eks Terraform stack's `github_environment` (default "production"):
+    # the github-actions-deployer role's OIDC trust policy conditions on
+    # `token.actions.githubusercontent.com:sub = repo:<repo>:environment:production`,
+    # so requesting a token outside this named Environment gets AssumeRoleWithWebIdentity
+    # denied even if AWS_EKS_DEPLOY_ROLE_ARN is otherwise correct.
+    #
+    # This Environment also has a required-reviewers protection rule (configured via the
+    # API, not in this file — see repo Settings > Environments > production): the job
+    # queues automatically on every push to main but pauses here until approved in the
+    # Actions UI, so nothing actually reaches the cluster unattended.
+    environment: production
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      # terraform output eks_cluster_name / github_actions_role_arn in the eks/ stack
+      # at C:\dev\learning\terraform — set these once that stack has been applied.
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+      DEPLOY_ROLE_ARN: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}
+      IMAGE: ${{ needs.build-and-push-image.outputs.image }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # A second, broader role than build-and-push-image's AWS_ROLE_ARN: this one also
+      # has eks:DescribeCluster and a namespace-scoped EKS access entry, and its trust
+      # policy is scoped to the `production` Environment above rather than just the repo.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl for the EKS cluster
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+
+      # kustomize (bundled on ubuntu-latest, alongside kubectl) rewrites the overlay's
+      # placeholder image in place with the tag build-and-push-image just pushed, so the
+      # exact image built and tested in this run is the one that gets deployed.
+      - name: Set image tag for this deploy
+        working-directory: k8s/overlays/production
+        run: kustomize edit set image "springboot-app=${IMAGE}"
+
+      - name: Apply manifests
+        run: kubectl apply -k k8s/overlays/production
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/springboot-app --namespace app --timeout=180s
