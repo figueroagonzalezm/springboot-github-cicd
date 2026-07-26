@@ -4,6 +4,7 @@ name: CI
 on:
   push:
     branches: [main]        # runs on every commit pushed to main
+    tags: ['v*']             # also runs on version tags (e.g. v1.2.3), so image builds get a semver tag
   pull_request:
     branches: [main]        # runs on every PR targeting main (validates before merge)
   workflow_dispatch:        # lets you trigger a run manually from the Actions tab
@@ -17,3 +18,101 @@ jobs:
     with:
       java-version: '17'
       gradle-task: 'build'
+
+  build-and-push-image:
+    name: Build & push image to ECR
+    needs: build-and-test
+    # Skip on pull_request: pushing images to a registry from every PR is noisy and,
+    # for PRs from forks, GitHub withholds secrets/vars anyway so OIDC auth would fail.
+    # Images are only published for pushes to main, version tags, or manual runs.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    # Job-level permissions narrow (never widen) the defaults for just this job.
+    # id-token: write is what lets this job request an OIDC token from GitHub's
+    # own OIDC provider — that token is what aws-actions/configure-aws-credentials
+    # exchanges with AWS for short-lived credentials, so no static AWS access keys
+    # are ever stored as a secret.
+    permissions:
+      contents: read
+      id-token: write
+
+    # These repo/organization *variables* (Settings > Secrets and variables > Actions > Variables)
+    # don't exist yet — they get created in Day 4 alongside the Terraform-provisioned ECR repo
+    # and OIDC IAM role. Until then this job will fail at the "Configure AWS credentials" step,
+    # which is expected at this point in the plan.
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Same cache as build-and-test.yml: keyed on build file hashes so it's reused
+      # across jobs/runs whenever dependencies haven't changed.
+      - name: Cache Gradle dependencies and wrapper
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      # Produces build/libs/app.jar, which the Dockerfile below expects to already exist.
+      - name: Build jar
+        run: ./gradlew bootJar
+
+      # Exchanges this job's GitHub-issued OIDC token for short-lived AWS credentials by
+      # assuming an IAM role — the role's trust policy (set up in Day 4) is what scopes
+      # which repo/branch is allowed to assume it. No aws_access_key_id/secret ever appears.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Buildx is the modern `docker build` engine (BuildKit) — it's what build-push-action
+      # uses under the hood, and it's what enables the GitHub Actions layer cache below.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Derives tags from context instead of hand-rolled bash: always a commit-sha tag,
+      # `latest` only on the default branch, and a semver tag when the run was triggered
+      # by a `vX.Y.Z` tag push.
+      - name: Extract image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # type=gha caches Docker layers in the GitHub Actions cache, the same idea as
+          # actions/cache above but for Buildx's own layer cache instead of ~/.gradle.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
