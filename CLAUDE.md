@@ -37,5 +37,9 @@ There are two near-identical trivial `@SpringBootTest` context-load tests (`Spri
 
 ## CI/CD
 
-- `.github/workflows/ci.yml` — the Day 1 workflow: builds and tests on `push`/`pull_request`/`workflow_dispatch`, caches `~/.gradle/caches` and `~/.gradle/wrapper`, and publishes the JUnit report as an artifact. It's commented inline to explain each GitHub Actions concept (events, jobs/runners, caching keys, artifacts) for learning purposes — keep those comments when editing.
-- Later days in the plan add: a reusable `workflow_call` workflow, building/pushing images to ECR via OIDC (no static AWS credentials), Terraform-provisioned IAM/OIDC resources (in the separate `C:\dev\learning\terraform` project), and CD to EKS via Kustomize.
+- `.github/workflows/ci.yml` — the caller workflow, triggered on `push` (main + `v*` tags), `pull_request`, and `workflow_dispatch`. Has two jobs:
+  - `build-and-test` — invokes the reusable `build-and-test.yml` workflow (Day 2) via `workflow_call`, parameterized by `java-version`/`gradle-task`.
+  - `build-and-push-image` (Day 3) — builds `build/libs/app.jar`, then builds/pushes the Docker image to ECR via Buildx (`docker/build-push-action`), tagged with `sha-<commit>`, `latest` (default branch only), and semver (on `v*` tags). Authenticates to AWS via OIDC (`aws-actions/configure-aws-credentials`, `id-token: write`) — no static AWS credentials. Skipped on `pull_request` events. Depends on repo/org variables (`vars.AWS_REGION`, `vars.ECR_REPOSITORY`, `vars.AWS_ROLE_ARN`) that don't exist until Day 4 provisions them, so this job will fail until then — expected at this point in the plan.
+- `.github/workflows/build-and-test.yml` — the Day 2 reusable workflow (`workflow_call`): builds and tests with Gradle, caches `~/.gradle/caches`/`~/.gradle/wrapper`, publishes the JUnit report as an artifact.
+- Both workflow files are commented inline to explain each GitHub Actions concept (events, jobs/runners, caching keys, artifacts, OIDC, reusable workflows) for learning purposes — keep those comments when editing.
+- Later days in the plan add: Terraform-provisioned ECR/OIDC/IAM resources (Day 4, in the separate `C:\dev\learning\terraform` project) and CD to EKS via Kustomize (Day 5).
