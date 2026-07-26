@@ -4,10 +4,17 @@ kind: Kustomization
 # Matches the eks Terraform stack's application_namespace (default "app"),
 # which is also the only namespace the Fargate profile schedules pods into
 # and the only namespace the github-actions-deployer role may act in.
+#
+# The Namespace object itself is NOT included as a resource here on purpose:
+# github-actions-deployer's EKS access is namespace-scoped RBAC (access_scope
+# type=namespace in eks/main.tf), which cannot create or patch a cluster-scoped
+# Namespace object — kubectl apply -k would fail with "Forbidden" on every
+# single deploy, not just the first. The namespace is provisioned once via
+# the eks Terraform stack's kubernetes_namespace.app resource instead, using
+# the cluster-creator identity's admin access.
 namespace: app
 
 resources:
-  - namespace.yaml
   - ../../base
 
 # Placeholder registry/tag for local `kubectl apply -k` dry runs. The CD job
