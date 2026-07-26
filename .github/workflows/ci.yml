@@ -97,21 +97,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Derives tags from context instead of hand-rolled bash: always a commit-sha tag,
-      # `latest` only on the default branch, and a semver tag when the run was triggered
-      # by a `vX.Y.Z` tag push. The full-sha tag (no prefix, unabbreviated) exists
-      # specifically so deploy-to-eks's `outputs.image` above can reference an exact,
-      # unambiguous tag without re-deriving docker/metadata-action's own short-sha format.
-      - name: Extract image tags
+      # Exactly one tag per push — the full, unabbreviated commit SHA — so ECR holds one
+      # tag per image instead of several tags on the same digest. Fires unconditionally
+      # (branch push or vX.Y.Z tag push alike), and is what deploy-to-eks's `outputs.image`
+      # above references, so this is the one tag that must never be dropped or renamed.
+      - name: Extract image tag
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
           tags: |
-            type=sha,prefix=sha-,format=short
             type=raw,value={{sha}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
 
       - name: Build and push image
         uses: docker/build-push-action@v6

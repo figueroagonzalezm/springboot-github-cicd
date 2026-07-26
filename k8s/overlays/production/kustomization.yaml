@@ -7,6 +7,7 @@ kind: Kustomization
 namespace: app
 
 resources:
+  - namespace.yaml
   - ../../base
 
 # Placeholder registry/tag for local `kubectl apply -k` dry runs. The CD job
