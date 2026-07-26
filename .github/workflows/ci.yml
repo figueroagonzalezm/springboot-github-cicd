@@ -116,7 +116,7 @@ jobs:
         with:
           images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
           tags: |
-            type=sha,format=long,prefix=
+            type=sha,format=long
 
       - name: Build and push image
         uses: docker/build-push-action@v6
