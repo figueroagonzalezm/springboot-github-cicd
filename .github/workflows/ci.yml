@@ -106,13 +106,17 @@ jobs:
       # always resolves to the short (7-char) SHA regardless of context, which silently
       # produced a tag that didn't match ${{ github.sha }} in outputs.image below, and
       # deploy-to-eks failed with ErrImagePull pulling a tag that was never pushed.
+      #
+      # prefix= (empty) is required too — type=sha defaults to prefix=sha- even when
+      # not written explicitly, which produced sha-<full-sha> and broke the match with
+      # outputs.image all over again on the very next attempt.
       - name: Extract image tag
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
           tags: |
-            type=sha,format=long
+            type=sha,format=long,prefix=
 
       - name: Build and push image
         uses: docker/build-push-action@v6
